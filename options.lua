@@ -1,5 +1,5 @@
--- Lily's options (Mod Manager): how often she acts, whether she kills, the whisper text. In multiplayer the host's
--- first two count; the text is each player's own.
+-- Lily's options (Mod Manager): how often she acts, whether she kills, the whisper text, when she is about. In
+-- multiplayer the host's choices count, but the text is each player's own.
 
 local function pick(label, y, items, cur, set)
 	UiPush()
@@ -31,11 +31,17 @@ function draw()
 		function(i) SetBool("savegame.mod.nokill", i == 2) end)
 	pick("Her whispers as faint text", 370, {"Shown", "Hidden"}, GetBool("savegame.mod.nosubs") and 2 or 1,
 		function(i) SetBool("savegame.mod.nosubs", i == 2) end)
-	UiTranslate(0, 520)
+	local w = GetInt("savegame.mod.when")
+	if w < 1 or w > 3 then w = 1 end
+	pick("When she is about (with the Day & Night mod)", 510, {"Any time", "Night only", "Day only"}, w,
+		function(i) SetInt("savegame.mod.when", i) end)
+	UiTranslate(0, 650)
 	UiFont("regular.ttf", 22)
 	UiColor(0.7, 0.7, 0.7)
 	UiText("The less she does, the less you can tell when.")
-	UiTranslate(0, 80)
+	UiTranslate(0, 34)
+	UiText("Night: dusk to dawn and the twilight round it, on Day & Night's clock. Without that mod she comes any time.")
+	UiTranslate(0, 70)
 	UiColor(1, 1, 1)
 	UiFont("bold.ttf", 32)
 	if UiTextButton("Close", 200, 50) then Menu() end

@@ -17,6 +17,8 @@ SIGHT_R = 40                  -- m: how far she sees (a clear line; behind her o
 HEAR_RUN = 12                 -- m: she hears anyone moving faster than 3.5 m/s this near
 HEAR_PER_VOL = 45             -- m per unit of GetLastSound volume (steps 0.05, a dropped crate 0.2, a shot 0.5), 60 m at most
 KILL_TIME = 1.6               -- s: the kill, from her hands on you to your death
+LILY_DAY_LIGHT = 0.45         -- Day & Night's daylight (0 night .. 0.88 full sun) from which on she keeps away
+LILY_ANYTIME = false          -- (the AUTO TEST copy sets it: its staged scenes run by day)
 
 -- how often things happen: Options (savegame.mod.freq 1 rare, 2 normal, 3 often) scales every waiting time
 LILY_FREQ = {1.7, 1.0, 0.55}
@@ -528,7 +530,35 @@ function lySleep(seconds)
 	ly.act = nil
 	ly.hunt = nil
 	ly.wake = ly.T + seconds
+	ly.dayPass = false
 	lyPublish()
+end
+
+-- Her hours (the user, 2026-11-14), Options "When she is about" (savegame.mod.when): 1 any time (the default), 2 night
+-- only, 3 day only. Night = Day & Night's night and the twilight round it, daylight under LILY_DAY_LIGHT (about 17:30 to
+-- 6:40 on its clock); day = the rest. Without Day & Night, or while it stands down, any time whatever the option (a map's
+-- own sky has no clock). Its keys (daynight/mods/daynight/API.md) are synced, updated once a second.
+function lyHerHours()
+	if LILY_ANYTIME or ly.when < 2 or not GetBool("daynight.present") or not GetBool("daynight.active") then return true end
+	local night = GetBool("daynight.night") or GetFloat("daynight.light") < LILY_DAY_LIGHT
+	if ly.when == 2 then return night end
+	return not night
+end
+
+-- once a second: when her hours begin her waiting starts over (never the moment it gets dark); when they end she is
+-- gone, whatever she was doing (a kill in progress ends first). A Lily called by a spawn-menu flag (or a command) has a
+-- day pass: she plays her round out by day and keeps the sun's hours after that.
+function lyHoursTick()
+	if ly.T < ly.hourT then return end
+	ly.hourT = ly.T + 1
+	local ok = lyHerHours()
+	if ok and not ly.hours then ly.wake = math.max(ly.wake, ly.T + rnd(20, 90) * F()) end
+	ly.hours = ok
+	if not ok and not ly.dayPass and ly.state ~= "dormant" and ly.state ~= "kill" then
+		if ly.vis then lyFx(0, "puff", ly.pos[1], ly.pos[2] + 0.6, ly.pos[3]) end
+		lyRestoreLights()
+		lySleep(30)
+	end
 end
 
 function lyAddTarget(p)
@@ -1028,6 +1058,7 @@ function lyCommand()
 	if #all == 0 then return end
 	local p = all[1]
 	lyVanish(); ly.act = nil; ly.blink = nil
+	ly.dayPass = c ~= "sleep"
 	if c == "scene" then
 		ly.misses = 1
 		lyStartScene()
@@ -1074,6 +1105,7 @@ function lySpawnAt(p)
 	lyRestoreLights()
 	ly.misses, ly.tries = 0, 0
 	lySceneAt(lyGround(p, 1.5, 4) or VecCopy(p))
+	ly.dayPass = true
 end
 
 function lySpawnMenu()
@@ -1109,7 +1141,8 @@ function Ghost.serverInit()
 	ly = {T = 0, state = "dormant", pos = Vec(0, -600, 0), yaw = 0, vis = false, anim = "stand", face = 0, only = 0, look = 0, speed = 0,
 		seq = 0, pubT = 0, targets = {}, crumbs = {}, crumbAt = {}, crumbN = 0, dark = {}, float = {}, balls = {}, seen = {},
 		misses = 0, tries = 0, hits = 0, saidSeen = GetInt("proxchat.said.last"), killCount = 0, freq = f, kills = not GetBool("savegame.mod.nokill"), maskT = 0, crumbT = 0,
-		markT0 = {}, markN = 0}
+		markT0 = {}, markN = 0, hourT = 0, hours = true, dayPass = false,
+		when = GetInt("savegame.mod.when")}
 	ly.wake = rnd(45, 110) * F()
 	lyHitSpawn()
 	SetString("lily.cmd", "")
@@ -1121,6 +1154,7 @@ function Ghost.serverTick(dt)
 	ly.T = ly.T + dt
 	lyCommand()
 	lySpawnMenu()
+	lyHoursTick()
 	if ly.T >= ly.maskT then                                          -- players pass through her hit box
 		ly.maskT = ly.T + 0.25
 		for _, p in ipairs(GetAllPlayers()) do
@@ -1156,7 +1190,9 @@ function Ghost.serverTick(dt)
 	if ly.vis and ly.state ~= "kill" then lyHitScan() end
 	lyBlinkTick()
 	if ly.state == "dormant" then
-		if ly.T >= ly.wake then lyStartScene() end
+		if ly.T >= ly.wake then
+			if ly.hours then lyStartScene() else ly.wake = ly.T + 5 end   -- (the sun is up: she waits for the dark)
+		end
 	elseif ly.state == "scene" then
 		if ly.act then lySceneTick(dt) elseif not ly.blink then lySleep(20) end
 	elseif ly.state == "haunt" then
