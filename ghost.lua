@@ -560,6 +560,11 @@ function lyStartScene()
 		return
 	end
 	ly.tries = 0
+	lySceneAt(g)
+end
+
+-- a scene at ground point g (her own pick, or where a spawn-menu flag was)
+function lySceneAt(g)
 	local kinds = {"play", "cry", "roam", "roam"}
 	local kind = kinds[math.random(#kinds)]
 	local _, pd = nearestPlayer(g)
@@ -1045,6 +1050,57 @@ function lyCommand()
 	end
 end
 
+----- the spawn menu (spawn.txt, prefab/spawner.xml): a flag put down counts down, then she is there -----
+-- No held buttons (the user): pick "Creatures/Lily", put the flag down, a number counts down over it, at 0 the flag
+-- goes and her scene starts where it is by then. There is one Lily: a flag moves her (whatever she was doing) rather
+-- than adding another. During a kill the flag waits at 0 until the kill is over.
+-- The spawn menu's PREVIEW (held in front of the camera before the click) is a lilyspawn body too: its shapes have
+-- collision mask 0 (spawn.lua sets 0, 0), the real one 255. A preview never counts (counting from first sight made
+-- Silkmaw and the Abyssipede come out with no flag put down). A marker without shapes counts as placed.
+LILY_MARK_T = 7               -- s from putting the flag down to her coming out
+
+local function markPlaced(b)
+	local shapes = GetBodyShapes(b) or {}
+	if #shapes == 0 then return true end
+	for _, sh in ipairs(shapes) do
+		local _, mask = GetShapeCollisionFilter(sh)
+		if (mask or 0) ~= 0 then return true end
+	end
+	return false
+end
+
+function lySpawnAt(p)
+	lyVanish(); ly.act = nil; ly.blink = nil; ly.hunt = nil
+	lyRestoreLights()
+	ly.misses, ly.tries = 0, 0
+	lySceneAt(lyGround(p, 1.5, 4) or VecCopy(p))
+end
+
+function lySpawnMenu()
+	local seen, marks = {}, {}
+	for _, b in ipairs(FindBodies("lilyspawn", true) or {}) do
+		seen[b] = true
+		if not ly.markT0[b] and markPlaced(b) then ly.markT0[b] = ly.T end
+		local t0 = ly.markT0[b]
+		if t0 then                                                    -- (nil: the spawn menu's preview - nothing yet)
+			local p = GetBodyTransform(b).pos
+			local left = LILY_MARK_T - (ly.T - t0)
+			if left <= 0 and ly.state ~= "kill" then
+				Delete(b)
+				ly.markT0[b] = nil
+				seen[b] = nil
+				lySpawnAt(p)
+			else
+				local k = #marks
+				marks[k + 1], marks[k + 2], marks[k + 3], marks[k + 4] = p[1], p[2], p[3], math.max(0, left)
+			end
+		end
+	end
+	for b in pairs(ly.markT0) do if not seen[b] then ly.markT0[b] = nil end end
+	if #marks > 0 or ly.markN > 0 then shared.lilyMarks = marks end   -- (nothing synced while there are no flags)
+	ly.markN = #marks
+end
+
 ----- callbacks -----
 
 function Ghost.serverInit()
@@ -1052,7 +1108,8 @@ function Ghost.serverInit()
 	if f < 1 or f > 3 then f = 2 end
 	ly = {T = 0, state = "dormant", pos = Vec(0, -600, 0), yaw = 0, vis = false, anim = "stand", face = 0, only = 0, look = 0, speed = 0,
 		seq = 0, pubT = 0, targets = {}, crumbs = {}, crumbAt = {}, crumbN = 0, dark = {}, float = {}, balls = {}, seen = {},
-		misses = 0, tries = 0, hits = 0, saidSeen = GetInt("proxchat.said.last"), killCount = 0, freq = f, kills = not GetBool("savegame.mod.nokill"), maskT = 0, crumbT = 0}
+		misses = 0, tries = 0, hits = 0, saidSeen = GetInt("proxchat.said.last"), killCount = 0, freq = f, kills = not GetBool("savegame.mod.nokill"), maskT = 0, crumbT = 0,
+		markT0 = {}, markN = 0}
 	ly.wake = rnd(45, 110) * F()
 	lyHitSpawn()
 	SetString("lily.cmd", "")
@@ -1063,6 +1120,7 @@ function Ghost.serverTick(dt)
 	if not ly then return end
 	ly.T = ly.T + dt
 	lyCommand()
+	lySpawnMenu()
 	if ly.T >= ly.maskT then                                          -- players pass through her hit box
 		ly.maskT = ly.T + 0.25
 		for _, p in ipairs(GetAllPlayers()) do

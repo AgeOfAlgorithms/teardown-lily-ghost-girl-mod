@@ -353,4 +353,24 @@ function GhostView.clientDraw()
 			UiPop()
 		end
 	end
+	local marks = shared.lilyMarks                                  -- spawn-menu flags: the seconds left over each
+	if marks then
+		for i = 1, #marks, 4 do
+			local px, py, d = UiWorldToPixel(Vec(marks[i], marks[i + 1] + 0.7, marks[i + 2]))
+			if d > 0 and d < 80 then
+				local n = tostring(math.ceil(marks[i + 3]))
+				UiPush()
+				UiTranslate(px, py)
+				UiAlign("center middle")
+				UiFont("bold.ttf", 44)
+				UiColor(0, 0, 0, 0.8)
+				UiTranslate(2, 2)
+				UiText(n)
+				UiTranslate(-2, -2)
+				UiColor(1, 1, 1, 0.6 + 0.4 * math.sin(t * 8))
+				UiText(n)
+				UiPop()
+			end
+		end
+	end
 end
