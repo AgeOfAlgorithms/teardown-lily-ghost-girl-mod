@@ -1133,6 +1133,55 @@ function lySpawnMenu()
 	ly.markN = #marks
 end
 
+----- the Villagers mod (villagers/mods/villagers/API.md): plain host registry keys, nothing happens without it -----
+-- She is one "thing" (lilyghost): villagers who see her fear her, each in their own way; hidden (only heard) while she
+-- is invisible or shown to one player alone; gone while she sleeps. Danger 0.2 while she plays and haunts, 0.7 while she
+-- hunts (they run at 0.3 or more). News when the hunt begins and when she kills.
+LILY_VL = {hesper = "hate", marl = "pity", wren = "curious", ysolde = "wary"}
+
+local function vlNews(text, sense, importance, range)
+	local n = GetInt("villagers.news.last") + 1
+	local b = "villagers.news." .. (n % 16) .. "."
+	SetString(b .. "text", text); SetString(b .. "sense", sense)
+	SetFloat(b .. "x", ly.pos[1]); SetFloat(b .. "y", ly.pos[2]); SetFloat(b .. "z", ly.pos[3])
+	SetFloat(b .. "range", range); SetInt(b .. "importance", importance)
+	SetInt("villagers.news.last", n)
+end
+
+function lyVillagers()
+	if ly.T < ly.vlT then return end
+	ly.vlT = ly.T + 0.5
+	if not GetBool("villagers.present") then ly.vlKind = false; return end
+	local k = "villagers.kind.lilyghost."
+	if not ly.vlKind then
+		ly.vlKind = true
+		SetString(k .. "name", "Lily"); SetString(k .. "feel", "fear")
+		for id, f in pairs(LILY_VL) do SetString(k .. "feel." .. id, f) end
+		SetString(k .. "note", "a little ghost girl who plays and cries in the dark, then comes for the living; she walks through walls")
+		SetString(k .. "sound", "a child humming, or laughing, close by"); SetFloat(k .. "hear", 18)
+	end
+	local hunting = ly.state == "hunt" or ly.state == "kill"
+	SetFloat(k .. "danger", hunting and 0.7 or 0.2)
+	local t = "villagers.thing.lily."
+	local there = ly.state ~= "dormant"
+	if not there then SetBool(t .. "gone", true); return end
+	SetBool(t .. "gone", false)
+	SetString(t .. "kind", "lilyghost")
+	SetFloat(t .. "x", ly.pos[1]); SetFloat(t .. "y", ly.pos[2] + 0.6); SetFloat(t .. "z", ly.pos[3])
+	SetBool(t .. "hidden", not ly.vis or ly.only ~= 0)
+	local doing = {scene = "humming to herself", haunt = "haunting the living", hunt = "hunting", kill = "killing someone"}
+	SetString(t .. "doing", doing[ly.state] or "standing there")
+	if ly.state == "hunt" and not ly.vlHunt then
+		ly.vlHunt = true
+		vlNews("a child cackling in the dark, coming closer", "heard", 4, 90)
+	elseif ly.state == "kill" and not ly.vlKill then
+		ly.vlKill = true
+		vlNews("a scream, and then a child's laughter", "heard", 5, 120)
+	end
+	if ly.state ~= "hunt" then ly.vlHunt = false end
+	if ly.state ~= "kill" then ly.vlKill = false end
+end
+
 ----- callbacks -----
 
 function Ghost.serverInit()
@@ -1141,7 +1190,7 @@ function Ghost.serverInit()
 	ly = {T = 0, state = "dormant", pos = Vec(0, -600, 0), yaw = 0, vis = false, anim = "stand", face = 0, only = 0, look = 0, speed = 0,
 		seq = 0, pubT = 0, targets = {}, crumbs = {}, crumbAt = {}, crumbN = 0, dark = {}, float = {}, balls = {}, seen = {},
 		misses = 0, tries = 0, hits = 0, saidSeen = GetInt("proxchat.said.last"), killCount = 0, freq = f, kills = not GetBool("savegame.mod.nokill"), maskT = 0, crumbT = 0,
-		markT0 = {}, markN = 0, hourT = 0, hours = true, dayPass = false,
+		markT0 = {}, markN = 0, hourT = 0, hours = true, dayPass = false, vlT = 0, vlKind = false, vlHunt = false, vlKill = false,
 		when = GetInt("savegame.mod.when")}
 	ly.wake = rnd(45, 110) * F()
 	lyHitSpawn()
@@ -1155,6 +1204,7 @@ function Ghost.serverTick(dt)
 	lyCommand()
 	lySpawnMenu()
 	lyHoursTick()
+	lyVillagers()
 	if ly.T >= ly.maskT then                                          -- players pass through her hit box
 		ly.maskT = ly.T + 0.25
 		for _, p in ipairs(GetAllPlayers()) do
