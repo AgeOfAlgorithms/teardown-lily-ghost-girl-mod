@@ -85,10 +85,55 @@ function lyPlayers()
 	return out
 end
 
-local function alive(p) return p and p ~= 0 and IsPlayerValid(p) and GetPlayerHealth(p) > 0 end
-local function feet(p) return GetPlayerTransform(p).pos end
-local function eye(p) return GetPlayerEyeTransform(p) end
-local function eyeFwd(p) return TransformToParentVec(eye(p), Vec(0, 0, -1)) end
+-- everyone she may haunt and hunt: the players and the living villagers
+function lyPrey()
+	local out = lyPlayers()
+	for _, v in ipairs(lyVlList()) do out[#out + 1] = v end
+	return out
+end
+
+-- one victim by a coin flip, players or villagers, then evenly within (a dozen villagers must not crowd the players out)
+function lyPickPrey()
+	local pl, vl = lyPlayers(), lyVlList()
+	if #pl == 0 and #vl == 0 then return 0 end
+	if #vl == 0 or (#pl > 0 and math.random() < 0.5) then return pl[math.random(#pl)] end
+	return vl[math.random(#vl)]
+end
+
+-- Villagers of Dunmarrow (villagers/mods/villagers/API.md) are prey like players: the string "vl:<id>" stands for one.
+-- These helpers take either; the rest of her mind does not care which it hunts.
+local function isVl(p) return type(p) == "string" end
+local function vlKey(p, k) return "villagers.v." .. p:sub(4) .. "." .. k end
+
+local function alive(p)
+	if isVl(p) then return GetBool(vlKey(p, "alive")) and GetFloat(vlKey(p, "hp")) > 0 end
+	return p and p ~= 0 and IsPlayerValid(p) and GetPlayerHealth(p) > 0
+end
+local function feet(p)
+	if isVl(p) then return Vec(GetFloat(vlKey(p, "x")), GetFloat(vlKey(p, "y")), GetFloat(vlKey(p, "z"))) end
+	return GetPlayerTransform(p).pos
+end
+local function eye(p)
+	if isVl(p) then local f = feet(p); return Transform(Vec(f[1], f[2] + 1.6, f[3])) end
+	return GetPlayerEyeTransform(p)
+end
+local function eyeFwd(p)
+	if isVl(p) then return Vec(0, 0, -1) end                         -- (their facing is not published)
+	return TransformToParentVec(eye(p), Vec(0, 0, -1))
+end
+
+-- every living villager, as ids; refreshed four times a second
+function lyVlList()
+	if not ly or not GetBool("villagers.present") then return {} end
+	if ly.T < ly.vlListT then return ly.vlList end
+	ly.vlListT = ly.T + 0.25
+	local out = {}
+	for id in string.gmatch(GetString("villagers.list"), "[^,]+") do
+		if GetBool("villagers.v." .. id .. ".alive") and GetFloat("villagers.v." .. id .. ".hp") > 0 then out[#out + 1] = "vl:" .. id end
+	end
+	ly.vlList = out
+	return out
+end
 
 -- does player p have `point` in front of them (cos of the half angle) with nothing in the way?
 function lySees(p, point, cone)
@@ -110,6 +155,8 @@ local function nearestPlayer(pos, list)
 	end
 	return best, bd
 end
+
+function lyNearestPrey(pos) return nearestPlayer(pos, lyPrey()) end
 
 local function farFromAll(g, d)
 	for _, p in ipairs(lyPlayers()) do
@@ -161,6 +208,9 @@ function lySensePlayer(p, sight)
 	if d < 3 then return true end
 	if d < (sight or SIGHT_R) and lyLos(h, e) then
 		if d < 6 or VecDot(rotY(Vec(0, 0, 1), ly.yaw), VecNormalize(VecSub(e, h))) > -0.2 then return true end
+	end
+	if isVl(p) then                                                    -- a villager's noise (.noise 0..1: walking 0.3, talking 0.6, running 0.7, yelling 1)
+		return GetFloat(vlKey(p, "noise")) >= 0.6 and d < HEAR_RUN + 6
 	end
 	if d < HEAR_RUN and VecLength(GetPlayerVelocity(p)) > 3.5 then return true end
 	if ly.sound and ly.sound.who == p then return true end
@@ -247,11 +297,12 @@ function lyPublish()
 	ly.seq = ly.seq + 1
 	ly.pubT = ly.T
 	shared.lily = {n = ly.seq, vis = ly.vis, x = ly.pos[1], y = ly.pos[2], z = ly.pos[3], yaw = ly.yaw, anim = ly.anim,
-		face = ly.face, only = ly.only, look = ly.look, state = ly.state, speed = ly.speed}
+		face = ly.face, only = ly.only, look = type(ly.look) == "number" and ly.look or 0, state = ly.state, speed = ly.speed}
 end
 
 -- (ClientCall needs its function name as a string literal: every effect goes through this one)
 function lyFx(p, kind, a, b, c, d, e)
+	if isVl(p) then return end                                        -- (a villager has no screen)
 	ClientCall(p, "client.lilyFx", kind, a or 0, b or 0, c or 0, d or 0, e or 0)
 end
 
@@ -570,18 +621,16 @@ local function pickTarget()
 	local live = {}
 	for _, p in ipairs(ly.targets) do if alive(p) then live[#live + 1] = p end end
 	if #live > 0 then return live[math.random(#live)] end
-	local all = lyPlayers()
-	if #all == 0 then return 0 end
-	local p = all[math.random(#all)]
+	local p = lyPickPrey()
+	if p == 0 then return 0 end
 	ly.targets = {p}
 	return p
 end
 
 --- a scene: she is somewhere out of sight, playing, crying or roaming, and can be heard
 function lyStartScene()
-	local all = lyPlayers()
-	if #all == 0 then lySleep(15); return end
-	local p = all[math.random(#all)]
+	if #lyPlayers() == 0 then lySleep(15); return end
+	local p = lyPickPrey()
 	local near = ly.misses > 0
 	local g = lyPickHidden(p, near and 16 or 22, near and 45 or 65)
 	if not g then
@@ -667,7 +716,7 @@ function lySceneTick(dt)
 		if ly.misses >= 2 then                                        -- nobody came: she goes and finds someone herself
 			ly.misses = 0
 			lyVanish()
-			local q = nearestPlayer(ly.pos)
+			local q = lyNearestPrey(ly.pos)
 			if q ~= 0 then lyStartHaunt({q}) else lySleep(30) end
 		else
 			lySleep(rnd(20, 60) * F())
@@ -892,7 +941,7 @@ function lyHauntTick(dt)
 		local p = pickTarget()
 		if p == 0 then lySleep(30); return end
 		h.nextT = ly.T + nextGap()
-		lyDoEvent(pickEvent(), p)
+		if isVl(p) then lyHauntVillager(p) else lyDoEvent(pickEvent(), p) end
 	end
 end
 
@@ -916,6 +965,7 @@ function lyStartHunt()
 		lyDarken(feet(q), 25, rnd(2, 4), len)
 		lyFx(q, "flash", rnd(2, 4))
 	end
+	if isVl(p) then lyDarken(feet(p), 25, rnd(2, 4), len) end
 	lyLevitate(feet(p), 8, 4, true)
 	lyPublish()
 end
@@ -947,7 +997,7 @@ function lyHuntTick(dt)
 	-- will do), else where she sensed someone last, else a noise. Out of her sight and silent, she has lost you:
 	-- she goes to where you were, listens, and searches round there until the hunt runs out.
 	local best, bd = 0, 1e9
-	for _, r in ipairs(lyPlayers()) do
+	for _, r in ipairs(lyPrey()) do
 		local rf = feet(r)
 		if hdist(rf, ly.pos) < CATCH_D and math.abs(rf[2] - ly.pos[2]) < 2.2 then lyStartKill(r); return end
 		if lySensePlayer(r) then
@@ -1017,7 +1067,7 @@ end
 
 function lyStartKill(p)
 	ly.state = "kill"
-	ly.kill = {p = p, stop = ly.T + KILL_TIME, hold = VecCopy(feet(p))}
+	ly.kill = {p = p, stop = ly.T + KILL_TIME, hold = VecCopy(feet(p)), vl = isVl(p)}
 	ly.anim = "reach"; ly.face = 1; ly.look = p; ly.speed = 0
 	lyFx(p, "kill", KILL_TIME)
 	lyVoice("shriek", ly.pos, 1)
@@ -1025,9 +1075,30 @@ function lyStartKill(p)
 	lyPublish()
 end
 
+-- a villager: she lifts them (villagers.carry), then the blow (villagers.hurt 100) - the players' kill without a camera
+local function vlKillTick()
+	local k = ly.kill
+	local id = k.p:sub(4)
+	if alive(k.p) and ly.T < k.stop then
+		local c = "villagers.carry." .. id .. "."
+		SetFloat(c .. "x", k.hold[1]); SetFloat(c .. "y", k.hold[2] + 1.1); SetFloat(c .. "z", k.hold[3]); SetString(c .. "by", "Lily")
+		ly.pos = Vec(k.hold[1], k.hold[2], k.hold[3] + 0.75)
+		ly.yaw = 180
+		return
+	end
+	ClearKey("villagers.carry." .. id)
+	if alive(k.p) then vlHurt(id, 100, 0, 6) end
+	ly.killCount = ly.killCount + 1
+	lyFx(0, "global", "laugh", math.random())
+	lyRestoreLights()
+	ly.targets = {}
+	lySleep(rnd(120, 300) * F())
+end
+
 function lyKillTick(dt)
 	local k = ly.kill
 	local p = k.p
+	if k.vl then vlKillTick(); return end
 	if IsPlayerValid(p) and GetPlayerHealth(p) > 0 and ly.T < k.stop then
 		SetPlayerVelocity(Vec(0, 0, 0), p)
 		local e = eye(p)
@@ -1137,7 +1208,37 @@ end
 -- She is one "thing" (lilyghost): villagers who see her fear her, each in their own way; hidden (only heard) while she
 -- is invisible or shown to one player alone; gone while she sleeps. Danger 0.2 while she plays and haunts, 0.7 while she
 -- hunts (they run at 0.3 or more). News when the hunt begins and when she kills.
-LILY_VL = {hesper = "hate", marl = "pity", wren = "curious", ysolde = "wary"}
+-- (each villager judges her themselves, from her name, note and danger: no per-villager feelings written, the user)
+
+-- a blow to a villager (health is 100): from where she stands, with a knock
+function vlHurt(id, amount, _, knock)
+	local n = GetInt("villagers.hurt.last") + 1
+	local b = "villagers.hurt." .. (n % 16) .. "."
+	SetString(b .. "target", id); SetFloat(b .. "amount", amount); SetString(b .. "by", "Lily")
+	SetFloat(b .. "x", ly.pos[1]); SetFloat(b .. "y", ly.pos[2] + 1); SetFloat(b .. "z", ly.pos[3]); SetFloat(b .. "knock", knock or 0)
+	SetInt("villagers.hurt.last", n)
+end
+
+LILY_VL_TELLS = {"You hear a child humming right by your ear, but nobody is there.", "A small cold hand has just touched yours.",
+	"Someone giggles behind you. You are alone.", "A little girl's voice whispers your name from the dark.",
+	"The shape of a child stands at the edge of your sight, and is gone when you look.", "Something small is skipping round you in the dark."}
+
+-- her haunting of a villager: a private word that reaches only them (villagers.tell), things lifting and lamps dying round
+-- them, a sound the neighbours hear. There is no apparition for them to be shown: the words are what they see.
+function lyHauntVillager(p)
+	local id = p:sub(4)
+	if math.random() < 0.75 then SetString("villagers.tell." .. id, LILY_VL_TELLS[math.random(#LILY_VL_TELLS)]) end
+	if math.random() < 0.55 then lyOmen(feet(p), 7, rnd(2, 4)) end
+	if math.random() < 0.4 then
+		lyVoice(math.random() < 0.5 and "giggle" or "hum", feet(p), 1)
+		local f = feet(p)
+		local n = GetInt("villagers.news.last") + 1
+		local b = "villagers.news." .. (n % 16) .. "."
+		SetString(b .. "text", "a child giggling in the dark where no child should be"); SetString(b .. "sense", "heard")
+		SetFloat(b .. "x", f[1]); SetFloat(b .. "y", f[2]); SetFloat(b .. "z", f[3]); SetFloat(b .. "range", 30); SetInt(b .. "importance", 3)
+		SetInt("villagers.news.last", n)
+	end
+end
 
 local function vlNews(text, sense, importance, range)
 	local n = GetInt("villagers.news.last") + 1
@@ -1156,8 +1257,7 @@ function lyVillagers()
 	if not ly.vlKind then
 		ly.vlKind = true
 		SetString(k .. "name", "Lily"); SetString(k .. "feel", "fear")
-		for id, f in pairs(LILY_VL) do SetString(k .. "feel." .. id, f) end
-		SetString(k .. "note", "a little ghost girl who plays and cries in the dark, then comes for the living; she walks through walls")
+		SetString(k .. "note", "the ghost of a little girl, as the old tales tell it: she plays and cries alone in the dark, whispers in one ear, hangs loose things in the air and puts out lamps, then her laughter turns to a cackle and she comes for the living, running or scuttling on all fours straight through walls; she kills whoever she catches; a shot only sends her off to come back nearer")
 		SetString(k .. "sound", "a child humming, or laughing, close by"); SetFloat(k .. "hear", 18)
 	end
 	local hunting = ly.state == "hunt" or ly.state == "kill"
@@ -1190,7 +1290,7 @@ function Ghost.serverInit()
 	ly = {T = 0, state = "dormant", pos = Vec(0, -600, 0), yaw = 0, vis = false, anim = "stand", face = 0, only = 0, look = 0, speed = 0,
 		seq = 0, pubT = 0, targets = {}, crumbs = {}, crumbAt = {}, crumbN = 0, dark = {}, float = {}, balls = {}, seen = {},
 		misses = 0, tries = 0, hits = 0, saidSeen = GetInt("proxchat.said.last"), killCount = 0, freq = f, kills = not GetBool("savegame.mod.nokill"), maskT = 0, crumbT = 0,
-		markT0 = {}, markN = 0, hourT = 0, hours = true, dayPass = false, vlT = 0, vlKind = false, vlHunt = false, vlKill = false,
+		markT0 = {}, markN = 0, hourT = 0, hours = true, dayPass = false, vlT = 0, vlList = {}, vlListT = 0, vlKind = false, vlHunt = false, vlKill = false,
 		when = GetInt("savegame.mod.when")}
 	ly.wake = rnd(45, 110) * F()
 	lyHitSpawn()
